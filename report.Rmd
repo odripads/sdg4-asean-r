@@ -1,0 +1,156 @@
+---
+title: "SDG 4 in ASEAN: what the UIS data show, and where they are thin"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+    self_contained: true
+params:
+  snapshot: "data/uis_sdg4_asean.csv"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, fig.width = 9, fig.height = 5, dpi = 110)
+suppressPackageStartupMessages({library(dplyr); library(ggplot2); library(tidyr)})
+source("R/checks.R")
+df <- readr::read_csv(params$snapshot, show_col_types = FALSE)
+flags <- readr::read_csv("data/quality_flags.csv", show_col_types = FALSE)
+ASEAN <- c(BRN = "Brunei", KHM = "Cambodia", IDN = "Indonesia", LAO = "Lao PDR", MYS = "Malaysia",
+           MMR = "Myanmar", PHL = "Philippines", SGP = "Singapore", THA = "Thailand",
+           TLS = "Timor-Leste", VNM = "Viet Nam")
+LABELS <- c("CR.1" = "Completion, primary", "CR.2" = "Completion, lower secondary",
+            "CR.3" = "Completion, upper secondary", "ROFST.1.CP" = "Out-of-school, primary age",
+            "ROFST.2.CP" = "Out-of-school, lower sec. age", "NERT.1.CP" = "Net enrolment, primary",
+            "GER.1" = "GER, primary", "GER.1.F" = "GER primary, female", "GER.1.M" = "GER primary, male",
+            "CR.1.GPIA" = "Gender parity, primary completion", "TRTP.1" = "Qualified teachers, primary",
+            "PTRHC.1" = "Pupil-teacher ratio, primary", "XGDP.FSGOV" = "Education spending, % GDP",
+            "XGOVEXP.IMF" = "Education, % of public spending")
+df <- df |> mutate(country = ASEAN[iso3])
+theme_set(theme_minimal(base_size = 12) + theme(panel.grid.minor = element_blank(),
+                                                plot.title.position = "plot"))
+BLUE <- "#1f4e79"
+```
+
+**Data:** UIS public data API, release **`r df$uis_version[1]`**, downloaded `r df$downloaded[1]`. `r format(nrow(df), big.mark=",")` values for 11 ASEAN member states (including Timor-Leste), `r min(df$year)`–`r max(df$year)`, `r n_distinct(df$indicator)` indicators. The code is at the repository root; `Rscript run.R --refresh` rebuilds everything from the live API.
+
+## 1. Where the data are thin
+
+Share of years since 2015 that have a value, by indicator and country. Completion rates come from household surveys, so they are much sparser than enrolment-based indicators, which come from the annual UIS survey. That gap matters most for SDG 4.1.2, the headline completion indicator.
+
+```{r coverage, fig.height=5.5}
+cov <- coverage(df, names(ASEAN), names(LABELS), 2015:max(df$year)) |>
+  mutate(country = factor(ASEAN[iso3], levels = rev(sort(unname(ASEAN)))),
+         ind = factor(LABELS[indicator], levels = LABELS))
+ggplot(cov, aes(ind, country, fill = share)) +
+  geom_tile(colour = "white", linewidth = 0.6) +
+  geom_text(aes(label = ifelse(is.na(latest), "none", latest)), size = 2.6,
+            colour = ifelse(cov$share > 0.55, "white", "grey25")) +
+  scale_fill_gradient(low = "#eef2f6", high = BLUE, labels = scales::percent, limits = c(0, 1)) +
+  labs(x = NULL, y = NULL, fill = "Years with data",
+       title = "Data availability since 2015 (label: latest year available)") +
+  theme(axis.text.x = element_text(angle = 40, hjust = 1), panel.grid = element_blank())
+```
+
+## 2. Completion rates (SDG 4.1.2)
+
+```{r completion, fig.height=6}
+cr <- df |> filter(indicator %in% c("CR.1", "CR.2", "CR.3"), !is.na(value)) |>
+  mutate(level = factor(recode(indicator, CR.1 = "Primary", CR.2 = "Lower secondary", CR.3 = "Upper secondary"),
+                        levels = c("Primary", "Lower secondary", "Upper secondary")))
+ggplot(cr, aes(year, value, colour = level)) +
+  geom_line(linewidth = 0.8) + geom_point(size = 1.3) +
+  facet_wrap(~country, ncol = 4) +
+  scale_colour_manual(values = c(Primary = BLUE, `Lower secondary` = "#4f9bd9", `Upper secondary` = "#e08a2c")) +
+  scale_y_continuous(limits = c(0, 100)) +
+  labs(x = NULL, y = "%", colour = NULL, title = "Completion rate by level") +
+  theme(legend.position = "top")
+```
+
+```{r gap}
+gap <- latest_value(filter(df, indicator %in% c("CR.2", "CR.3"))) |>
+  select(country, indicator, value, year) |>
+  pivot_wider(names_from = indicator, values_from = c(value, year)) |>
+  filter(!is.na(value_CR.2), !is.na(value_CR.3)) |>
+  mutate(gap = value_CR.2 - value_CR.3) |> arrange(desc(gap))
+top <- head(gap, 4)
+```
+
+Completion falls with each level everywhere. The steepest drop between lower and upper secondary, in the latest available years, is in `r paste(top$country, collapse = ", ")` (`r paste(sprintf("%.0f", top$gap), collapse = ", ")` points). Myanmar's latest completion data are from `r gap$year_CR.3[gap$country == "Myanmar"]`, and Singapore reports only upper-secondary completion. Viet Nam's latest lower-secondary and upper-secondary figures come from different years, so its gap is approximate.
+
+## 3. Out-of-school rates (SDG 4.1.4), latest year
+
+```{r oos}
+oos <- latest_value(filter(df, indicator %in% c("ROFST.1.CP", "ROFST.2.CP"))) |>
+  mutate(age = recode(indicator, ROFST.1.CP = "Primary age", ROFST.2.CP = "Lower secondary age"))
+ggplot(oos, aes(value, reorder(country, value), fill = age)) +
+  geom_col(position = position_dodge(width = 0.75), width = 0.7) +
+  geom_text(aes(label = sprintf("%.1f (%d)", value, year)), position = position_dodge(width = 0.75),
+            hjust = -0.1, size = 3) +
+  scale_fill_manual(values = c(`Primary age` = BLUE, `Lower secondary age` = "#e08a2c")) +
+  scale_x_continuous(expand = expansion(mult = c(0, 0.25))) +
+  labs(x = "% of children of that age not enrolled (label: year)", y = NULL, fill = NULL) +
+  theme(legend.position = "top")
+```
+
+## 4. Public spending against the Education 2030 benchmarks
+
+The Education 2030 Framework for Action asks countries to spend at least 4–6% of GDP, or at least 15–20% of total public expenditure, on education. The chart shows each country's latest figures; the shaded corner meets neither benchmark.
+
+```{r spend, fig.height=5.5}
+sp <- latest_value(filter(df, indicator %in% c("XGDP.FSGOV", "XGOVEXP.IMF"))) |>
+  select(iso3, country, indicator, value, year) |>
+  pivot_wider(names_from = indicator, values_from = c(value, year))
+ggplot(sp, aes(`value_XGDP.FSGOV`, `value_XGOVEXP.IMF`)) +
+  annotate("rect", xmin = -Inf, xmax = 4, ymin = -Inf, ymax = 15, fill = "#fde7e5", alpha = 0.8) +
+  geom_vline(xintercept = c(4, 6), linetype = c("dashed", "dotted"), colour = "grey50") +
+  geom_hline(yintercept = c(15, 20), linetype = c("dashed", "dotted"), colour = "grey50") +
+  geom_point(colour = BLUE, size = 3) +
+  ggrepel::geom_text_repel(aes(label = sprintf("%s (%d)", country, `year_XGDP.FSGOV`)), size = 3.2,
+                           min.segment.length = 0.2, seed = 1) +
+  scale_x_continuous(expand = expansion(mult = 0.12)) +
+  labs(x = "Government expenditure on education, % of GDP",
+       y = "Education, % of total government expenditure",
+       title = "Latest education spending (label: year of the GDP measure)")
+neither <- sp |> filter(`value_XGDP.FSGOV` < 4, `value_XGOVEXP.IMF` < 15)
+```
+
+By the latest figures, `r nrow(neither)` of `r nrow(sp)` countries meet neither benchmark: `r paste(sort(neither$country), collapse = ", ")`. Indonesia's figure (`r sprintf("%.1f%%", sp$value_XGOVEXP.IMF[sp$iso3 == "IDN"])` of government spending) sits well below the 20% of the budget the Indonesian constitution earmarks for education. The two measure different things: the national figure counts transfers and spending categories differently from the UIS definition. Anyone comparing the two needs to reconcile the definitions first.
+
+## 5. Quality checks on the published series
+
+Automated checks run on every download (code in `R/checks.R`):
+
+- **Range:** bounded percentages (completion, net enrolment, out-of-school, qualified teachers) must lie in 0–100.
+- **Identity:** the out-of-school rate must equal 100 minus the total net enrolment rate (tolerance 0.5 points).
+- **Sex bracket:** the both-sexes GER must lie between the female and male values.
+- **Jumps:** a change of more than 10 points between consecutive observations (gaps of up to two years).
+
+```{r flags-summary}
+n_by <- count(flags, check)
+all_checks <- tibble(check = c("range", "oos_identity", "sex_bracket", "jump")) |>
+  left_join(n_by, by = "check") |> mutate(n = coalesce(n, 0L))
+knitr::kable(all_checks, col.names = c("Check", "Flags"))
+```
+
+The range, identity and sex-bracket checks pass on every value: the published series are internally consistent. The jump check finds the series below. A jump is not an error. It can reflect a new data source, a revised population estimate or a real change. It is the question an analyst would put to the country, or check against the metadata, before using the number.
+
+```{r flags-table}
+flags |>
+  filter(check == "jump") |>
+  mutate(country = ASEAN[iso3], indicator = LABELS[indicator]) |>
+  select(country, indicator, year, detail) |>
+  knitr::kable(col.names = c("Country", "Indicator", "Year", "Change"))
+```
+
+Two patterns stand out:
+
+- **Indonesia, upper-secondary completion:** 75.8% in 2021, 43.0% in 2022, 73.4% in 2023. A one-year collapse and recovery of that size looks more like a source or estimation issue in 2022 than a real change, and that year should not be used for trend statements without checking.
+- **Qualified primary teachers (TRTP.1):** large breaks in Brunei, Indonesia, Lao PDR and Viet Nam. Changes to the national definition of the "minimum required qualification" are a common cause of breaks in this indicator, so trends should be read alongside the metadata.
+
+## Method notes
+
+- Indicator definitions follow the UIS glossary. Values are taken as published; nothing is re-estimated here.
+- `NAT_EST` and `UIS_EST` qualifiers (national and UIS estimates) are kept in the data file.
+- Timor-Leste is included as the eleventh ASEAN member.
+- Reproduce: `Rscript run.R` (offline, from the saved snapshot) or `Rscript run.R --refresh` (live API). Tests: `Rscript -e 'testthat::test_dir("tests/testthat")'`.
